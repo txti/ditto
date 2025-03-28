@@ -1,6 +1,3 @@
-import numpy as np
-import csv
-import sys
 import os
 
 from sklearn.feature_extraction.text import TfidfVectorizer

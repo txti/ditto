@@ -1,19 +1,15 @@
 import os
-import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import random
+from torch.optim import AdamW
+
 import numpy as np
 import sklearn.metrics as metrics
-import argparse
 
-from .dataset import DittoDataset
 from torch.utils import data
-from transformers import AutoModel, AdamW, get_linear_schedule_with_warmup
+from transformers import AutoModel, get_linear_schedule_with_warmup
 from tensorboardX import SummaryWriter
-from apex import amp
+from torch.cuda import amp
 
 lm_mp = {'roberta': 'roberta-base',
          'distilbert': 'distilbert-base-uncased'}
@@ -76,7 +72,6 @@ def evaluate(model, iterator, threshold=None):
         float (optional): if threshold is not provided, the threshold
             value that gives the optimal F1
     """
-    all_p = []
     all_y = []
     all_probs = []
     with torch.no_grad():
@@ -93,7 +88,7 @@ def evaluate(model, iterator, threshold=None):
         return f1
     else:
         best_th = 0.5
-        f1 = 0.0 # metrics.f1_score(all_y, all_p)
+        f1 = 0.0
 
         for th in np.arange(0.0, 1.0, 0.05):
             pred = [1 if p > th else 0 for p in all_probs]
@@ -118,6 +113,8 @@ def train_step(train_iter, model, optimizer, scheduler, hp):
     Returns:
         None
     """
+
+    # scaler = torch.cuda.amp.GradScaler()
     criterion = nn.CrossEntropyLoss()
     # criterion = nn.MSELoss()
     for i, batch in enumerate(train_iter):
@@ -130,13 +127,17 @@ def train_step(train_iter, model, optimizer, scheduler, hp):
             x1, x2, y = batch
             prediction = model(x1, x2)
 
+
         loss = criterion(prediction, y.to(model.device))
 
-        if hp.fp16:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
+        # TODO: Use AMP properly
+        # if hp.fp16:
+        #     with amp.autocast():
+        #         scaler.scale(loss).backward()
+        # else:
+        #     loss.backward()
+
+        loss.backward()
         optimizer.step()
         scheduler.step()
         if i % 10 == 0: # monitoring
@@ -184,8 +185,10 @@ def train(trainset, validset, testset, run_tag, hp):
     model = model.cuda()
     optimizer = AdamW(model.parameters(), lr=hp.lr)
 
-    if hp.fp16:
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
+    # TODO: Use AMP properly
+    # if hp.fp16:
+    #     model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
+
     num_steps = (len(trainset) // hp.batch_size) * hp.n_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=0,
@@ -202,7 +205,7 @@ def train(trainset, validset, testset, run_tag, hp):
 
         # eval
         model.eval()
-        dev_f1, th = evaluate(model, valid_iter)
+        dev_f1, th = evaluate(model, valid_iter, threshold=None)
         test_f1 = evaluate(model, test_iter, threshold=th)
 
         if dev_f1 > best_dev_f1:

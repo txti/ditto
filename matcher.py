@@ -1,28 +1,23 @@
-import torch
-import torch.nn as nn
-import os
-import numpy as np
-import random
-import json
-import jsonlines
-import csv
-import re
-import time
 import argparse
-import sys
-import sklearn
-import traceback
+import json
+import os
+import random
+import time
 
+import jsonlines
+import numpy as np
+import sklearn
+import sklearn.metrics
+import torch
+from scipy.special import softmax
 from torch.utils import data
 from tqdm import tqdm
-from apex import amp
-from scipy.special import softmax
 
-from ditto_light.ditto import evaluate, DittoModel
-from ditto_light.exceptions import ModelNotFoundError
 from ditto_light.dataset import DittoDataset
-from ditto_light.summarize import Summarizer
+from ditto_light.ditto import DittoModel, evaluate
+from ditto_light.exceptions import ModelNotFoundError
 from ditto_light.knowledge import *
+from ditto_light.summarize import Summarizer
 
 
 def set_seed(seed: int):
@@ -48,32 +43,29 @@ def to_str(ent1, ent2, summarizer=None, max_len=256, dk_injector=None):
     Returns:
         string: the serialized version
     """
-    content = ''
+    content = ""
     for ent in [ent1, ent2]:
         if isinstance(ent, str):
             content += ent
         else:
             for attr in ent.keys():
-                content += 'COL %s VAL %s ' % (attr, ent[attr])
-        content += '\t'
+                content += "COL %s VAL %s " % (attr, ent[attr])
+        content += "\t"
 
-    content += '0'
+    content += "0"
 
     if summarizer is not None:
         content = summarizer.transform(content, max_len=max_len)
 
-    new_ent1, new_ent2, _ = content.split('\t')
+    new_ent1, new_ent2, _ = content.split("\t")
     if dk_injector is not None:
         new_ent1 = dk_injector.transform(new_ent1)
         new_ent2 = dk_injector.transform(new_ent2)
 
-    return new_ent1 + '\t' + new_ent2 + '\t0'
+    return new_ent1 + "\t" + new_ent2 + "\t0"
 
 
-def classify(sentence_pairs, model,
-             lm='distilbert',
-             max_len=256,
-             threshold=None):
+def classify(sentence_pairs, model, lm="distilbert", max_len=256, threshold=None):
     """Apply the MRPC model.
 
     Args:
@@ -87,21 +79,20 @@ def classify(sentence_pairs, model,
     """
     inputs = sentence_pairs
     # print('max_len =', max_len)
-    dataset = DittoDataset(inputs,
-                           max_len=max_len,
-                           lm=lm)
+    dataset = DittoDataset(inputs, max_len=max_len, lm=lm)
     # print(dataset[0])
-    iterator = data.DataLoader(dataset=dataset,
-                               batch_size=len(dataset),
-                               shuffle=False,
-                               num_workers=0,
-                               collate_fn=DittoDataset.pad)
+    iterator = data.DataLoader(
+        dataset=dataset,
+        batch_size=len(dataset),
+        shuffle=False,
+        num_workers=0,
+        collate_fn=DittoDataset.pad,
+    )
 
     # prediction
     all_probs = []
     all_logits = []
     with torch.no_grad():
-        # print('Classification')
         for i, batch in enumerate(iterator):
             x, _ = batch
             logits = model(x)
@@ -115,14 +106,19 @@ def classify(sentence_pairs, model,
     pred = [1 if p > threshold else 0 for p in all_probs]
     return pred, all_logits
 
-def predict(input_path, output_path, config,
-            model,
-            batch_size=1024,
-            summarizer=None,
-            lm='distilbert',
-            max_len=256,
-            dk_injector=None,
-            threshold=None):
+
+def predict(
+    input_path,
+    output_path,
+    config,
+    model,
+    batch_size=1024,
+    summarizer=None,
+    lm="distilbert",
+    max_len=256,
+    dk_injector=None,
+    threshold=None,
+):
     """Run the model over the input file containing the candidate entry pairs
 
     Args:
@@ -142,35 +138,33 @@ def predict(input_path, output_path, config,
     pairs = []
 
     def process_batch(rows, pairs, writer):
-        predictions, logits = classify(pairs, model, lm=lm,
-                                       max_len=max_len,
-                                       threshold=threshold)
-        # try:
-        #     predictions, logits = classify(pairs, model, lm=lm,
-        #                                    max_len=max_len,
-        #                                    threshold=threshold)
-        # except:
-        #     # ignore the whole batch
-        #     return
+        predictions, logits = classify(
+            pairs, model, lm=lm, max_len=max_len, threshold=threshold
+        )
         scores = softmax(logits, axis=1)
         for row, pred, score in zip(rows, predictions, scores):
-            output = {'left': row[0], 'right': row[1],
-                'match': pred,
-                'match_confidence': score[int(pred)]}
+            output = {
+                "left": row[0],
+                "right": row[1],
+                "match": pred,
+                "match_confidence": score[int(pred)],
+            }
             writer.write(output)
 
     # input_path can also be train/valid/test.txt
     # convert to jsonlines
-    if '.txt' in input_path:
-        with jsonlines.open(input_path + '.jsonl', mode='w') as writer:
+    if ".txt" in input_path:
+        with jsonlines.open(input_path + ".jsonl", mode="w") as writer:
             for line in open(input_path):
-                writer.write(line.split('\t')[:2])
-        input_path += '.jsonl'
+                writer.write(line.split("\t")[:2])
+        input_path += ".jsonl"
 
     # batch processing
     start_time = time.time()
-    with jsonlines.open(input_path) as reader,\
-         jsonlines.open(output_path, mode='w') as writer:
+    with (
+        jsonlines.open(input_path) as reader,
+        jsonlines.open(output_path, mode="w") as writer,
+    ):
         pairs = []
         rows = []
         for idx, row in tqdm(enumerate(reader)):
@@ -185,13 +179,18 @@ def predict(input_path, output_path, config,
             process_batch(rows, pairs, writer)
 
     run_time = time.time() - start_time
-    run_tag = '%s_lm=%s_dk=%s_su=%s' % (config['name'], lm, str(dk_injector != None), str(summarizer != None))
-    os.system('echo %s %f >> log.txt' % (run_tag, run_time))
+    run_tag = "%s_lm=%s_dk=%s_su=%s" % (
+        config["name"],
+        lm,
+        str(dk_injector is not None),
+        str(summarizer is not None),
+    )
+    os.system("echo %s %f >> log.txt" % (run_tag, run_time))
 
 
 def tune_threshold(config, model, hp):
     """Tune the prediction threshold for a given model on a validation set"""
-    validset = config['validset']
+    validset = config["validset"]
     task = hp.task
 
     # summarize the sequences up to the max sequence length
@@ -199,10 +198,12 @@ def tune_threshold(config, model, hp):
     summarizer = injector = None
     if hp.summarize:
         summarizer = Summarizer(config, lm=hp.lm)
-        validset = summarizer.transform_file(validset, max_len=hp.max_len, overwrite=True)
+        validset = summarizer.transform_file(
+            validset, max_len=hp.max_len, overwrite=True
+        )
 
     if hp.dk is not None:
-        if hp.dk == 'product':
+        if hp.dk == "product":
             injector = ProductDKInjector(config, hp.dk)
         else:
             injector = GeneralDKInjector(config, hp.dk)
@@ -210,17 +211,17 @@ def tune_threshold(config, model, hp):
         validset = injector.transform_file(validset)
 
     # load dev sets
-    valid_dataset = DittoDataset(validset,
-                                 max_len=hp.max_len,
-                                 lm=hp.lm)
+    valid_dataset = DittoDataset(validset, max_len=hp.max_len, lm=hp.lm)
 
     # print(valid_dataset[0])
 
-    valid_iter = data.DataLoader(dataset=valid_dataset,
-                                 batch_size=64,
-                                 shuffle=False,
-                                 num_workers=0,
-                                 collate_fn=DittoDataset.pad)
+    valid_iter = data.DataLoader(
+        dataset=valid_dataset,
+        batch_size=64,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=DittoDataset.pad,
+    )
 
     # acc, prec, recall, f1, v_loss, th = eval_classifier(model, valid_iter,
     #                                                     get_threshold=True)
@@ -228,30 +229,34 @@ def tune_threshold(config, model, hp):
 
     # verify F1
     set_seed(123)
-    predict(validset, "tmp.jsonl", config, model,
-            summarizer=summarizer,
-            max_len=hp.max_len,
-            lm=hp.lm,
-            dk_injector=injector,
-            threshold=th)
+    predict(
+        validset,
+        "tmp.jsonl",
+        config,
+        model,
+        summarizer=summarizer,
+        max_len=hp.max_len,
+        lm=hp.lm,
+        dk_injector=injector,
+        threshold=th,
+    )
 
     predicts = []
     with jsonlines.open("tmp.jsonl", mode="r") as reader:
         for line in reader:
-            predicts.append(int(line['match']))
+            predicts.append(int(line["match"]))
     os.system("rm tmp.jsonl")
 
     labels = []
     with open(validset) as fin:
         for line in fin:
-            labels.append(int(line.split('\t')[-1]))
+            labels.append(int(line.split("\t")[-1]))
 
     real_f1 = sklearn.metrics.f1_score(labels, predicts)
     print("load_f1 =", f1)
     print("real_f1 =", real_f1)
 
     return th
-
 
 
 def load_model(task, path, lm, use_gpu, fp16=True):
@@ -269,41 +274,43 @@ def load_model(task, path, lm, use_gpu, fp16=True):
         MultiTaskNet: the model
     """
     # load models
-    checkpoint = os.path.join(path, task, 'model.pt')
+    checkpoint = os.path.join(path, task, "model.pt")
     if not os.path.exists(checkpoint):
         raise ModelNotFoundError(checkpoint)
 
-    configs = json.load(open('configs.json'))
-    configs = {conf['name'] : conf for conf in configs}
+    configs = json.load(open("configs.json"))
+    configs = {conf["name"]: conf for conf in configs}
     config = configs[task]
-    config_list = [config]
 
     if use_gpu:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
-        device = 'cpu'
+        device = "cpu"
 
     model = DittoModel(device=device, lm=lm)
 
     saved_state = torch.load(checkpoint, map_location=lambda storage, loc: storage)
-    model.load_state_dict(saved_state['model'])
+    model.load_state_dict(saved_state["model"])
     model = model.to(device)
 
-    if fp16 and 'cuda' in device:
-        model = amp.initialize(model, opt_level='O2')
+    # TODO: Use AMP in PyTorch properly
+    # if fp16 and 'cuda' in device:
+    #     model = amp.initialize(model, opt_level='O2')
 
     return config, model
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default='Structured/Beer')
-    parser.add_argument("--input_path", type=str, default='input/candidates_small.jsonl')
-    parser.add_argument("--output_path", type=str, default='output/matched_small.jsonl')
-    parser.add_argument("--lm", type=str, default='distilbert')
+    parser.add_argument("--task", type=str, default="Structured/Beer")
+    parser.add_argument(
+        "--input_path", type=str, default="input/candidates_small.jsonl"
+    )
+    parser.add_argument("--output_path", type=str, default="output/matched_small.jsonl")
+    parser.add_argument("--lm", type=str, default="distilbert")
     parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     parser.add_argument("--fp16", dest="fp16", action="store_true")
-    parser.add_argument("--checkpoint_path", type=str, default='checkpoints/')
+    parser.add_argument("--checkpoint_path", type=str, default="checkpoints/")
     parser.add_argument("--dk", type=str, default=None)
     parser.add_argument("--summarize", dest="summarize", action="store_true")
     parser.add_argument("--max_len", type=int, default=256)
@@ -311,15 +318,14 @@ if __name__ == "__main__":
 
     # load the models
     set_seed(123)
-    config, model = load_model(hp.task, hp.checkpoint_path,
-                       hp.lm, hp.use_gpu, hp.fp16)
+    config, model = load_model(hp.task, hp.checkpoint_path, hp.lm, hp.use_gpu, hp.fp16)
 
     summarizer = dk_injector = None
     if hp.summarize:
         summarizer = Summarizer(config, hp.lm)
 
     if hp.dk is not None:
-        if 'product' in hp.dk:
+        if "product" in hp.dk:
             dk_injector = ProductDKInjector(config, hp.dk)
         else:
             dk_injector = GeneralDKInjector(config, hp.dk)
@@ -328,9 +334,14 @@ if __name__ == "__main__":
     threshold = tune_threshold(config, model, hp)
 
     # run prediction
-    predict(hp.input_path, hp.output_path, config, model,
-            summarizer=summarizer,
-            max_len=hp.max_len,
-            lm=hp.lm,
-            dk_injector=dk_injector,
-            threshold=threshold)
+    predict(
+        hp.input_path,
+        hp.output_path,
+        config,
+        model,
+        summarizer=summarizer,
+        max_len=hp.max_len,
+        lm=hp.lm,
+        dk_injector=dk_injector,
+        threshold=threshold,
+    )

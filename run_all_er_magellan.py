@@ -38,8 +38,8 @@ swap
 del""".split('\n')
 
 
-lms = ['roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'roberta',
-       'roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'bert']
+# lms = ['roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'roberta',
+#        'roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'bert']
 
 # lms = ['xlnet', 'roberta', 'roberta', 'roberta', 'xlnet', 'bert',
 #        'bert', 'xlnet', 'roberta', 'bert', 'roberta', 'roberta', 'bert']
@@ -48,6 +48,8 @@ lms = ['roberta', 'roberta', 'roberta', 'roberta', 'roberta', 'roberta',
 # bert
 # xlnet
 # roberta""".split('\n')
+
+lms = ["distilbert"]
 
 for dataset, op, lm in zip(datasets, ops, lms):
     if dataset in special_datasets:
