@@ -1,0 +1,10 @@
+name: el
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10.16
+  - pip
+  - ipykernel
+  - pip:
+    - -r requirements.txt
+    - ruff
